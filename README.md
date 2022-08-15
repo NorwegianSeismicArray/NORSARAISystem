@@ -17,7 +17,7 @@ If an error occurs when importing `nais`, likely ``sndfile`` library is not inst
 
 ``apt-get install libsndfile1-dev``
 
-# Quick example
+## Quick example
 
 ```python
 import numpy as np
@@ -30,3 +30,6 @@ model = AlexNet1D(num_outputs=1) #binary
 model.compile('adam','binary_crossentropy')
 model.fit(X,y)
 ```
+
+## Contributing
+We appreachate all contributions as long as they are related to core problems the repository will aid in solving. 
