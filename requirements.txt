@@ -1,0 +1,8 @@
+numpy>=1.19
+scipy
+tensorflow
+keras_tuner
+scikit-learn
+pandas
+tqdm
+pillow
