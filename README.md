@@ -1,11 +1,10 @@
 ### NORSAR Artificial Inteligence System (NAIS, yes, the acronym was chosen first)
-This repository will eventually contain tools specific to aiding in AI research at NORSAR.
+This repository was originally developed to contain tools specific to aiding in AI research at NORSAR. 
 
 This repository is based on Tensorflow and Keras. 
 
-This repository will contain: 
-* Baseline models, for waveforms and spectrograms. Possibly pretrained for certain tasks.
-* Standard datasets to test models. Development of new models can be difficult. Standard datasets eliminates errors in the data and lets you focus on developing the model. 
+This repository contains: 
+* Baseline models, for waveforms and spectrograms.
   * Classification
   * Regression
   * Masking (eg. arrival picking)
