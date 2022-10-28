@@ -51,6 +51,7 @@ class AugmentWaveformSequence(tf.keras.utils.Sequence):
                  x_set,
                  y_set,
                  event_type,
+                 detection=None,
                  snr=None,
                  batch_size=32,
                  y_type='single',
@@ -67,13 +68,16 @@ class AugmentWaveformSequence(tf.keras.utils.Sequence):
                  add_noise=0.0,
                  drop_channel=0.0,
                  scale_amplitude=0.0,
-                 pre_emphasis=0.97,
+                 pre_emphasis=0.0,
                  min_snr=10.0,
                  add_event_space=40,
                  buffer=0,
-                 shuffle=False
+                 shuffle=False,
+                 random_crop=True,
+                 create_label=False
                  ):
         self.x, self.y = x_set, y_set
+        self.detection = detection
         self.num_channels = self.x.shape[-1]
         self.y_type = y_type
         self.event_type = event_type
@@ -91,6 +95,10 @@ class AugmentWaveformSequence(tf.keras.utils.Sequence):
             self.y = [self.y]
             self.y_type = [self.y_type]
 
+        self.detection_index = -1
+        self.phase_index = np.arange(len(y_set))
+
+        self.random_crop = random_crop
         self.add_event_space = add_event_space
         self.norm_mode = norm_mode
         self.norm_channel_mode = norm_channel_mode
@@ -108,6 +116,8 @@ class AugmentWaveformSequence(tf.keras.utils.Sequence):
         self.scale_amplitude = scale_amplitude
         self.pre_emphasis = pre_emphasis
         self.ramp = ramp
+        self.create_label = create_label
+        self.non_noise_events = np.where(self.event_type != 'noise')[0]
 
         self.on_epoch_end()
 
@@ -175,14 +185,9 @@ class AugmentWaveformSequence(tf.keras.utils.Sequence):
 
     def _add_noise(self, X, snr, rate):
         if np.random.uniform(0, 1) < rate and snr >= self.min_snr:
-            noisy_X = np.empty_like(X)
-            for c in range(X.shape[-1]):
-                noisy_X[:, c] = X[:, c] + np.random.normal(
-                    0, np.random.uniform(0.01, 0.15) * max(X[:, c]), X.shape[0])
-        else:
-            noisy_X = X
-
-        return noisy_X
+            N = np.stack([np.random.normal(loc=np.random.uniform(0.01, 0.15) * m, size=X.shape[0]) for m in X.max(axis=0)], axis=-1)
+            X += N
+        return X
 
     def _adjust_amplitute_for_multichannels(self, X):
         t = np.max(np.abs(X), axis=0, keepdims=True)
@@ -222,23 +227,29 @@ class AugmentWaveformSequence(tf.keras.utils.Sequence):
             if event2_size < space_before and before:
                 # before first event
                 left_over = space_before - event2_size
-                s = np.random.randint(0, left_over-space)
-                e = s + len(event2)
-                X1[s:e] += event2 * scale
+                if left_over - space > 0:
+                    s = np.random.randint(0, left_over-space)
+                    e = s + len(event2)
+                    X1[s:e] += event2 * scale
 
             elif event2_size < space_after and after:
                 # after first event
                 left_over = space_after - event2_size
-                s = np.random.randint(space, left_over)
-                e = s + len(event2)
-                X1[end1+s:end1+e] += event2 * scale
+                if left_over > space:
+                    s = np.random.randint(space, left_over)
+                    e = s + len(event2)
+                    X1[end1+s:end1+e] += event2 * scale
 
         return X1, scale
 
-    def _shift_crop(self, img, mask, detection):
-        y = np.random.randint(max(0,self.ramp), len(img) - self.new_length)
-        img = img[y:y + self.new_length]
-        mask = mask[y:y + self.new_length]
+    def _shift_crop(self, img, mask):
+        if self.random_crop:
+            y1 = np.random.randint(0, len(img) - self.new_length)
+        else:
+            y1 = int((len(img) - self.new_length) / 2)
+
+        img = img[y1:y1 + self.new_length]
+        mask = mask[y1:y1 + self.new_length]
         return img, mask
 
     def _taper(self, img, mask, alpha=0.1):
@@ -246,10 +257,7 @@ class AugmentWaveformSequence(tf.keras.utils.Sequence):
         return img*w[:,np.newaxis], mask
 
     def _pre_emphasis(self, X, pre_emphasis=0.97):
-        for ch in range(X.shape[-1]):
-            bpf = X[:, ch]
-            X[:, ch] = np.append(bpf[0], bpf[1:] - pre_emphasis * bpf[:-1])
-        return X
+        return np.stack([np.append(X[0,c], X[1:,c] - pre_emphasis * X[:-1,c]) for c in range(X.shape[1])], axis=-1)
 
     def _convert_y_to_regions(self, y, yt, label):
         for j in range(len(y)):
@@ -292,8 +300,12 @@ class AugmentWaveformSequence(tf.keras.utils.Sequence):
 
         x = self.x[idx]
         y = [a[idx] for a in self.y]
-        label = np.zeros((x.shape[0],len(self.y_type)))
-        label, detection = self._convert_y_to_regions(y, self.y_type, label)
+        if self.create_label:
+            label = np.zeros((x.shape[0],len(self.y_type)))
+            label, detection = self._convert_y_to_regions(y, self.y_type, label)
+        else:
+            detection = self.detection[idx]
+            label = np.concatenate([np.expand_dims(detection, axis=-1), np.stack(y, axis=-1)], axis=-1)
 
         do_aug = self.augmentation and np.random.random() > 0.5
         if do_aug:
@@ -304,12 +316,22 @@ class AugmentWaveformSequence(tf.keras.utils.Sequence):
                     x = self._add_gaps(
                         x, self.add_gap, max_size=self.max_gap_size)
             else:
-                if self.add_event > 0:
-                    t = np.random.choice(np.where(self.event_type != 'noise')[0])
-                    label2 = np.zeros((x.shape[0], len(self.y_type)))
-                    label2, detection2 = self._convert_y_to_regions([a[t] for a in self.y], self.y_type, label2)
-                    x, scale = self._add_event(x, detection, self.x[t], detection2, self.snr[idx], self.add_event, self.add_event_space)
-                    label = np.amax([label, label2*scale], axis=0)
+                if self.add_event > np.random.uniform(0,1) and self.snr[idx] >= self.min_snr:
+                    t = np.random.choice(self.non_noise_events)
+                    y2 = [a[t] for a in self.y]
+                    if self.create_label:
+                        label2 = np.zeros((x.shape[0], len(self.y_type)))
+                        label2, detection2 = self._convert_y_to_regions(y2, self.y_type, label2)
+                    else:
+                        detection2 = self.detection[t]
+                        label2 = np.concatenate([np.expand_dims(detection2, axis=-1), np.stack(y2, axis=-1)], axis=-1)
+                    roll = np.random.randint(0, label.shape[0])
+                    label = np.roll(label, roll, axis=0)
+                    x2 = np.roll(self.x[t], roll, axis=0)
+                    scale = 1 / np.random.uniform(1, 10)
+                    label = np.amax([label, label2 * scale], axis=0)
+                    x = x + scale * x2
+
                 if self.add_noise > 0:
                     x = self._add_noise(x, self.snr[idx], self.add_noise)
                 if self.drop_channel > 0:
@@ -322,7 +344,7 @@ class AugmentWaveformSequence(tf.keras.utils.Sequence):
                     x = self._add_gaps(
                         x, self.add_gap, max_size=self.max_gap_size)
 
-        x, label = self._shift_crop(x, label, detection)
+        x, label = self._shift_crop(x, label)
         if self.taper_alpha > 0:
             x, label = self._taper(x, label, self.taper_alpha)
 
