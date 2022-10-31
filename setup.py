@@ -11,13 +11,13 @@ with open('./requirements.txt') as file:
 
 setuptools.setup(
     name="nais",
-    version="0.2.5",
+    version="0.2.8",
     author="Erik B. Myklebust",
     author_email="erik@norsar.no",
     description="NORSAR AI System.",
     long_description=read_me_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/NorwegianSeismicArray/nais",
+    url="https://github.com/NorwegianSeismicArray/NORSARAISystem",
     packages=['nais'],
     install_requires=req,
     classifiers=[

@@ -737,22 +737,22 @@ class ScatNet(tf.keras.Model):
                  pooling_size=1024,
                  eps=1e-3,
                  n_pca=5,
+                 eps_log=0.001,
                  n_clusters=10,
                  moving_pca=0.9,
                  name='scatnet',
                  loss_weights=(1e-5, 1),
-                 return_prob=False,
                  **filters_kw
                  ):
         super(ScatNet, self).__init__(name=name)
 
         self.batch_size = input_shape[0]
         self.n_pca = n_pca
+        self.eps_log = eps_log
         self.moving_pca = moving_pca
         self.n_clusters = n_clusters
         self.eps = eps
         self.loss_weights = loss_weights
-        self.return_prob = return_prob
 
         depth = len(j)
         self.ls = [Scattering(batch_size=self.batch_size,
@@ -814,20 +814,21 @@ class ScatNet(tf.keras.Model):
             r.append(renorm(ss[i], ss[i-1], self.eps))
 
         sx = tf.concat(r, axis=1)
-        sx = tf.math.log(sx + tf.keras.backend.epsilon())
+        sx = tf.math.log(sx + self.eps_log)
         sx = tf.reshape(sx, (self.batch_size, -1))
-        sx -= tf.math.reduce_mean(sx,axis=1,keepdims=True)
+        sx -= tf.math.reduce_mean(sx, axis=0, keepdims=True)
+        trans_input = min(sx.shape)
 
         #PCA
-        singular_values, u, v = tf.linalg.svd(sx, full_matrices=False)
-        sigma = tf.linalg.diag(singular_values)
+        singular_values, u, _ = tf.linalg.svd(sx, full_matrices=False)
+        sigma = tf.slice(tf.linalg.diag(singular_values), [0, 0], [trans_input, self.n_pca])
 
         if not hasattr(self, 'moving_sigma') and training:
-           self.moving_sigma = tf.Variable(sigma, name='sigma')
+            self.moving_sigma = tf.Variable(tf.zeros_like(sigma), name='sigma', trainable=False)
         else:
-            self.moving_sigma.assign(self.moving_pca*self.moving_sigma + (1-self.moving_pca)*sigma)
+            self.moving_sigma.assign(self.moving_pca * self.moving_sigma + (1-self.moving_pca) * sigma)
 
-        pca = tf.linalg.matmul(u, self.moving_sigma)[..., :self.n_pca]
+        pca = tf.linalg.matmul(u, self.moving_sigma)
 
         return pca
 
@@ -837,20 +838,14 @@ class ScatNet(tf.keras.Model):
         x = data
         proj = self.forward(x, training=False)
         sample, prob, mean, logvar = self.gmm(tf.ones((proj.shape[0],1)))
-        log_likelihood = self.gmm.log_likelihood(proj, prob, mean, logvar)
 
-        if self.return_prob:
-            return prob
-        else:
-            return tf.argmax(input=prob, axis=1)
+        return proj, prob
 
     def train_step(self, data):
         if type(data) == tuple:
             data, _ = data
 
         x = data
-
-        total_loss = 0
 
         with tf.GradientTape() as tape:
 
@@ -861,7 +856,7 @@ class ScatNet(tf.keras.Model):
                 self.gmm = GMM(proj.shape[1], self.n_clusters)
 
             sample, prob, mean, logvar = self.gmm(tf.ones((proj.shape[0],1)))
-            log_likelihood = self.gmm.log_likelihood(proj, prob, mean, logvar)
+            log_likelihood = self.gmm.log_likelihood(sample, prob, mean, logvar)
 
             gmm_loss = self.loss_weights[1] * log_likelihood
 

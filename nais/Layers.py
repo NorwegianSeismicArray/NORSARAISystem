@@ -9,7 +9,6 @@ import numpy as np
 import tensorflow.keras.layers as tfl
 import tensorflow.keras.backend as K
 from nais.utils import complex_hermite_interp, real_hermite_interp
-import logging
 FORMAT = 'float32'
 
 class StackedSpectrogram(tfl.Layer):
@@ -694,27 +693,25 @@ class Scattering(tf.keras.layers.Layer):
                 1, self.num_filters - self.k), exclusive=True, axis=1)
         knots = knots_sum - (self.k // 2) * tf.expand_dims(scales, 1)
 
+        # Boundary Conditions
+        mask = tf.concat([tf.zeros((1,)), tf.ones((self.k-2,)), tf.zeros((1,))], axis=0)
+
         if self.hilbert:
-            # Boundary Conditions and centering
-            mask = np.ones(self.k, dtype=np.float32)
-            mask[0], mask[-1] = 0, 0
-            m_null = self.m - tf.reduce_mean(self.m[1:-1])
-            filters = real_hermite_interp(self.time_grid, knots, m_null * mask, self.p * mask)
+            #Centering
+            m_null = self.m - mask * tf.math.reduce_mean(self.m, keepdims=True)
+            filters = real_hermite_interp(self.time_grid, knots, m_null * tf.squeeze(mask), self.p * mask)
 
             # Renorm and set filter-bank
-            filters_renorm = filters / tf.reduce_max(filters, 1, keepdims=True)
-            filters_fft = tf.spectral.rfft(filters_renorm)
-            filters = tf.ifft(tf.concat([filters_fft, tf.zeros_like(filters_fft)], 1))
+            filters_renorm = filters / tf.math.reduce_max(filters, 1, keepdims=True)
+            filters_fft = tf.signal.rfft(filters_renorm)
+            filters = tf.signal.ifft(tf.concat([filters_fft, tf.zeros_like(filters_fft)], 1))
 
         else:
-            # Boundary Conditions and centering
-            mask = np.ones((1, self.k), dtype=np.float32)
-            mask[0, 0], mask[0, -1] = 0, 0
-            m_null = self.m - tf.reduce_mean(self.m[:, 1:-1], axis=1, keepdims=True)
+            mask = tf.expand_dims(mask, axis=0)
+            m_null = self.m - mask * tf.math.reduce_mean(self.m, axis=1, keepdims=True)
             filters = complex_hermite_interp(self.time_grid, knots, m_null * mask, self.p * mask)
-
             # Renorm and set filter-bank
-            filters_renorm = filters / tf.reduce_max(filters, 2, keepdims=True)
+            filters_renorm = filters / tf.math.reduce_max(filters, 2, keepdims=True)
             filters = tf.complex(filters_renorm[0], filters_renorm[1])
 
         filters_concat = tf.concat([tf.math.real(filters), tf.math.imag(filters)], 0)
@@ -722,6 +719,8 @@ class Scattering(tf.keras.layers.Layer):
         return filters_kernel
 
     def build(self, input_shape):
+        pi = tf.constant(np.pi)
+
         extra_octave = 1 if self.learn_scales else 0
         self.num_filters = self.k * 2 ** (self.j + extra_octave)
         time_max = np.float32(self.k * 2 ** (self.j - 1 + extra_octave))
@@ -732,15 +731,27 @@ class Scattering(tf.keras.layers.Layer):
 
         if self.hilbert:
             # Create the (real) parameters
-            m = (np.cos(np.arange(self.k) * np.pi) * np.hamming(self.k)).astype(FORMAT)
-            p = (np.zeros(self.k)).astype(FORMAT)
+            #m = (np.cos(np.arange(self.k) * np.pi) * np.hamming(self.k)).astype(FORMAT)
+            #p = (np.zeros(self.k)).astype(FORMAT)
+
+            m = tf.math.cos(tf.range(self.k, dtype='float32') * pi) * tf.signal.hamming_window(self.k)
+            p = tf.zeros(self.k)
+
         else:
             # Create the (complex) parameters
-            m = np.stack([np.cos(np.arange(self.k) * np.pi) * np.hamming(self.k),
-                          np.zeros(self.k) * np.hamming(self.k)]).astype(FORMAT)
-            p = np.stack([np.zeros(self.k),
-                          np.cos(np.arange(self.k) * np.pi) * np.hamming(self.k)]
-                         ).astype(FORMAT)
+            #m = np.stack([np.cos(np.arange(self.k) * np.pi) * np.hamming(self.k),
+            #              np.zeros(self.k) * np.hamming(self.k)]).astype(FORMAT)
+            #p = np.stack([np.zeros(self.k),
+            #              np.cos(np.arange(self.k) * np.pi) * np.hamming(self.k)]
+            #             ).astype(FORMAT)
+            m = tf.stack([
+                tf.math.cos(tf.range(self.k, dtype='float32') * pi) * tf.signal.hamming_window(self.k),
+                tf.zeros(self.k) * tf.signal.hamming_window(self.k)
+            ])
+            p = tf.stack([
+                tf.zeros(self.k),
+                tf.math.cos(tf.range(self.k, dtype='float32') * pi) * tf.signal.hamming_window(self.k)
+            ])
 
         self.m = tf.Variable(m, name='m', trainable=self.learn_filters)
         self.p = tf.Variable(p, name='p', trainable=self.learn_filters)
