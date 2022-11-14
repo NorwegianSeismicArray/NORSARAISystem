@@ -32,4 +32,4 @@ model.fit(X,y)
 ```
 
 ## Contributing
-We appreachate all contributions as long as they are related to core problems the repository will aid in solving. 
+We appreciate all contributions as long as they are related to core problems the repository will aid in solving. 
